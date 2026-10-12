@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">STB Remote</string>
+    <string name="send_to_stb">Send to STB</string>
+</resources>
