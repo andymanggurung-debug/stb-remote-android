@@ -1,6 +1,6 @@
 package com.stb.remote
 
-import android.app.Activity
+import androidx.activity.ComponentActivity
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
@@ -8,7 +8,7 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import java.util.regex.Pattern
 
-class ShareReceiverActivity : Activity() {
+class ShareReceiverActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
