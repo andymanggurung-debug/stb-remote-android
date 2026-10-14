@@ -1,8 +1,11 @@
 package com.stb.remote.ui
 
 import android.widget.Toast
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -11,14 +14,17 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.stb.remote.PreferencesManager
-import com.stb.remote.TelegramService
+import com.stb.remote.*
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -31,9 +37,36 @@ fun MainScreen(preferencesManager: PreferencesManager) {
     var chatId by remember { mutableStateOf(preferencesManager.getChatId()) }
     var manualLink by remember { mutableStateOf("") }
     var isSending by remember { mutableStateOf(false) }
-    var statusMessage by remember { mutableStateOf("") }
+
+    var dashboardState by remember { mutableStateOf<DashboardState?>(null) }
+    var isRefreshing by remember { mutableStateOf(false) }
 
     val isConfigured = botToken.isNotBlank() && chatId.isNotBlank()
+
+    // Automatic polling loop every 8 seconds when configured
+    LaunchedEffect(isConfigured, botToken, chatId) {
+        if (!isConfigured) return@LaunchedEffect
+        while (true) {
+            val res = TelegramService.fetchLiveDashboard(botToken, chatId)
+            res.onSuccess { dashboardState = it }
+            delay(8000)
+        }
+    }
+
+    val refreshDashboard: () -> Unit = {
+        if (isConfigured && !isRefreshing) {
+            isRefreshing = true
+            scope.launch {
+                val res = TelegramService.fetchLiveDashboard(botToken, chatId)
+                isRefreshing = false
+                res.onSuccess {
+                    dashboardState = it
+                }.onFailure {
+                    Toast.makeText(context, "Refresh failed: ${it.localizedMessage}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -43,6 +76,27 @@ fun MainScreen(preferencesManager: PreferencesManager) {
                         Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(28.dp))
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("STB Remote Control", fontWeight = FontWeight.Bold)
+                    }
+                },
+                actions = {
+                    if (isConfigured) {
+                        val infiniteTransition = rememberInfiniteTransition(label = "spin")
+                        val angle by infiniteTransition.animateFloat(
+                            initialValue = 0f,
+                            targetValue = 360f,
+                            animationSpec = infiniteRepeatable(
+                                animation = tween(1000, easing = LinearEasing),
+                                repeatMode = RepeatMode.Restart
+                            ),
+                            label = "spin"
+                        )
+                        IconButton(onClick = refreshDashboard) {
+                            Icon(
+                                Icons.Default.Refresh,
+                                contentDescription = "Refresh",
+                                modifier = if (isRefreshing) Modifier.rotate(angle) else Modifier
+                            )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -60,46 +114,62 @@ fun MainScreen(preferencesManager: PreferencesManager) {
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
 
-            // Status Banner
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = if (isConfigured) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.errorContainer
+            // 1. Live STB Conditions Card
+            if (isConfigured) {
+                LiveConditionsCard(
+                    state = dashboardState,
+                    isRefreshing = isRefreshing,
+                    onRefresh = refreshDashboard
                 )
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        if (isConfigured) Icons.Default.CheckCircle else Icons.Default.Warning,
-                        contentDescription = null
+            } else {
+                // Warning Banner if not configured
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
                     )
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column {
-                        Text(
-                            text = if (isConfigured) "Connected & Ready" else "Configuration Required",
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = if (isConfigured)
-                                "Android Share & Magnet links will forward to STB"
-                            else
-                                "Enter your Telegram Bot Token & Chat ID below",
-                            fontSize = 12.sp
-                        )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Warning, contentDescription = null)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text("Configuration Required", fontWeight = FontWeight.Bold)
+                            Text(
+                                "Enter your Bot Token and Telegram Chat ID below to link with STB.",
+                                fontSize = 12.sp
+                            )
+                        }
                     }
                 }
             }
 
-            // Quick Send Card
+            // 2. Active Transfers Section
+            if (isConfigured) {
+                ActiveTransfersCard(
+                    transfers = dashboardState?.transfers ?: emptyList(),
+                    isIdle = dashboardState?.isIdle ?: true,
+                    onSendAction = { cmd ->
+                        scope.launch {
+                            TelegramService.sendMessage(botToken, chatId, cmd)
+                            Toast.makeText(context, "Action sent: $cmd", Toast.LENGTH_SHORT).show()
+                            delay(1000)
+                            refreshDashboard()
+                        }
+                    }
+                )
+            }
+
+            // 3. Quick Send Card
             Card {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("Direct Send to STB", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        "Paste any magnet link, torrent URL, or YouTube link to start downloading immediately on your STB.",
+                        "Paste any magnet link, torrent URL, YouTube, Twitter/X, or manga query.",
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -108,7 +178,7 @@ fun MainScreen(preferencesManager: PreferencesManager) {
                     OutlinedTextField(
                         value = manualLink,
                         onValueChange = { manualLink = it },
-                        label = { Text("Paste Magnet / Link") },
+                        label = { Text("Paste Magnet / URL / Command") },
                         modifier = Modifier.fillMaxWidth(),
                         maxLines = 4,
                         trailingIcon = {
@@ -132,6 +202,8 @@ fun MainScreen(preferencesManager: PreferencesManager) {
                                 result.onSuccess {
                                     Toast.makeText(context, "🚀 Sent to STB!", Toast.LENGTH_SHORT).show()
                                     manualLink = ""
+                                    delay(1500)
+                                    refreshDashboard()
                                 }.onFailure {
                                     Toast.makeText(context, "Error: ${it.localizedMessage}", Toast.LENGTH_LONG).show()
                                 }
@@ -147,10 +219,10 @@ fun MainScreen(preferencesManager: PreferencesManager) {
                 }
             }
 
-            // Quick Bot Commands
+            // 4. Quick Actions
             Card {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Quick Bot Actions", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text("Quick Commands", fontWeight = FontWeight.Bold, fontSize = 18.sp)
                     Spacer(modifier = Modifier.height(12.dp))
 
                     val commands = listOf(
@@ -204,7 +276,7 @@ fun MainScreen(preferencesManager: PreferencesManager) {
                 }
             }
 
-            // Settings Card
+            // 5. Telegram Bridge Settings
             Card {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("Telegram Bridge Settings", fontWeight = FontWeight.Bold, fontSize = 18.sp)
@@ -245,6 +317,7 @@ fun MainScreen(preferencesManager: PreferencesManager) {
                                 isSending = false
                                 res.onSuccess {
                                     Toast.makeText(context, "✅ Settings saved & verified!", Toast.LENGTH_SHORT).show()
+                                    refreshDashboard()
                                 }.onFailure {
                                     Toast.makeText(context, "❌ Error: ${it.localizedMessage}", Toast.LENGTH_LONG).show()
                                 }
@@ -254,12 +327,293 @@ fun MainScreen(preferencesManager: PreferencesManager) {
                     ) {
                         Icon(Icons.Default.Save, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Save & Test Connection")
+                        Text("Save & Verify Connection")
                     }
                 }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
+        }
+    }
+}
+
+@Composable
+fun LiveConditionsCard(
+    state: DashboardState?,
+    isRefreshing: Boolean,
+    onRefresh: () -> Unit
+) {
+    val cond = state?.condition
+
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .background(
+                                color = if (cond != null) Color(0xFF388E3C) else Color.Gray,
+                                shape = RoundedCornerShape(5.dp)
+                            )
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("📡 STB Live Conditions", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                }
+                if (state?.lastUpdatedText?.isNotEmpty() == true) {
+                    Text(
+                        text = "Updated: ${state.lastUpdatedText}",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Stat Badges
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Temperature
+                MetricBox(
+                    modifier = Modifier.weight(1f),
+                    icon = "🌡",
+                    title = "Temp",
+                    value = cond?.temp?.ifEmpty { "N/A" } ?: "N/A"
+                )
+
+                // Speeds
+                MetricBox(
+                    modifier = Modifier.weight(1f),
+                    icon = "⚡",
+                    title = "Download",
+                    value = cond?.dlSpeed ?: "0.0B/s"
+                )
+
+                // Uptime
+                MetricBox(
+                    modifier = Modifier.weight(1f),
+                    icon = "⏱",
+                    title = "Uptime",
+                    value = cond?.uptime?.ifEmpty { "N/A" } ?: "N/A"
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // RAM Bar
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("🧠 RAM Memory", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        text = if (cond != null && cond.ramTotalMb > 0)
+                            "${cond.ramUsedMb} / ${cond.ramTotalMb} MB (${(cond.ramPercent * 100).toInt()}%)"
+                        else "N/A",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                LinearProgressIndicator(
+                    progress = cond?.ramPercent ?: 0f,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(8.dp),
+                    shape = RoundedCornerShape(4.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun MetricBox(
+    modifier: Modifier = Modifier,
+    icon: String,
+    title: String,
+    value: String
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+    ) {
+        Column(
+            modifier = Modifier.padding(10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text("$icon $title", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(value, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        }
+    }
+}
+
+@Composable
+fun ActiveTransfersCard(
+    transfers: List<ActiveTransfer>,
+    isIdle: Boolean,
+    onSendAction: (String) -> Unit
+) {
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "📦 Transfers & Progress",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp
+                )
+                if (transfers.isNotEmpty()) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer
+                    ) {
+                        Text(
+                            text = "${transfers.size} active",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            if (transfers.isEmpty()) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF388E3C))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            "All transfers complete. STB is idle.",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    transfers.forEach { item ->
+                        TransferItemRow(item)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Action row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = { onSendAction("/pause") },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("⏸ Pause All", fontSize = 12.sp)
+                }
+                OutlinedButton(
+                    onClick = { onSendAction("/resume") },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("▶️ Resume All", fontSize = 12.sp)
+                }
+                OutlinedButton(
+                    onClick = { onSendAction("/cleanup") },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("🧹 Cleanup", fontSize = 12.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun TransferItemRow(item: ActiveTransfer) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(
+                        text = item.type.icon,
+                        fontSize = 16.sp
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = item.name,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "${item.progress}%",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            LinearProgressIndicator(
+                progress = (item.progress / 100f).coerceIn(0f, 1f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp),
+                shape = RoundedCornerShape(3.dp)
+            )
+
+            if (item.info.isNotBlank()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = item.info,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }

@@ -7,6 +7,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -39,3 +42,19 @@ jobs:
           name: STB-Remote-APK
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 14
+
+      - name: Release Latest APK
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.1.0
+          name: "STB Remote v1.1.0 (Live Dashboard & Transfer Progress)"
+          body: |
+            ## ✨ What's New in v1.1.0
+            - 📡 **Live STB Health**: Temperature, RAM memory gauge, uptime, and real-time download/upload network speeds.
+            - 📦 **Active Transfer Cards**: Native progress bars for active torrents, media grabs, and Google Drive uploads.
+            - ⚡ **Auto-Refresh**: Live status syncs every 8 seconds via Telegram Bot API with zero battery waste.
+            - 🎮 **Quick Actions**: One-tap Pause All, Resume All, and Cleanup.
+          files: app/build/outputs/apk/debug/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
