@@ -14,6 +14,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -429,8 +430,8 @@ fun LiveConditionsCard(
                     progress = cond?.ramPercent ?: 0f,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(8.dp),
-                    shape = RoundedCornerShape(4.dp)
+                        .height(8.dp)
+                        .clip(RoundedCornerShape(4.dp))
                 )
             }
         }
@@ -602,8 +603,8 @@ fun TransferItemRow(item: ActiveTransfer) {
                 progress = (item.progress / 100f).coerceIn(0f, 1f),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(6.dp),
-                shape = RoundedCornerShape(3.dp)
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(3.dp))
             )
 
             if (item.info.isNotBlank()) {
